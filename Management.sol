@@ -121,7 +121,7 @@ contract Management is Ownable {
         tariffCount++;
         tariffs[tariffCount].oneTime = _oneTime;
         tariffs[tariffCount].price = _price;
-        tariffs[tariffCount].daysCount = _daysCount;
+        tariffs[tariffCount].daysCount = _daysCount * 1 days;
         emit TariffAdded(tariffCount, _oneTime, _price, _daysCount);
     }
 
@@ -130,7 +130,7 @@ contract Management is Ownable {
         require(_tariff <= tariffCount);
         tariffs[_tariff].oneTime = _oneTime;
         tariffs[_tariff].price = _price;
-        tariffs[_tariff].daysCount = _daysCount;
+        tariffs[_tariff].daysCount = _daysCount * 1 days;
         emit TariffAdded(_tariff, _oneTime, _price, _daysCount);
     }
 
@@ -164,10 +164,12 @@ contract Management is Ownable {
 
         if (!tariffs[users[msg.sender].tariff].oneTime) {
 
+            uint _tariff = users[msg.sender].tariff;
+
             if (users[msg.sender].stopDay > now) {
-                users[msg.sender].stopDay = users[msg.sender].stopDay + 30 days;
+                users[msg.sender].stopDay = users[msg.sender].stopDay + tariffs[_tariff].daysCount;
             } else {
-                users[msg.sender].stopDay = now + 30 days;
+                users[msg.sender].stopDay = now + tariffs[_tariff].daysCount;
             }
             emit NewPayment(msg.sender, msg.value);
             return true;

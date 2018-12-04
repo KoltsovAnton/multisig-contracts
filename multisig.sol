@@ -54,7 +54,7 @@ contract multiOwned {
     // that later attempts can be realised as the same underlying operation and
     // thus count as confirmations.
     modifier onlyManyOwners(bytes32 _operation) {
-        if(confirmAndCheck(_operation))
+        if(confirmAndCheck(_operation, msg.sender))
             _;
     }
 
@@ -161,9 +161,9 @@ contract multiOwned {
 
     // INTERNAL METHODS
 
-    function confirmAndCheck(bytes32 _operation) internal returns (bool) {
+    function confirmAndCheck(bytes32 _operation, address _user) internal returns (bool) {
         // determine what index the present sender is:
-        uint ownerIndex = m_ownerIndex[uint(msg.sender)];
+        uint ownerIndex = m_ownerIndex[uint(_user)];
         // make sure they're an owner
         if (ownerIndex == 0) return;
 
@@ -181,7 +181,7 @@ contract multiOwned {
         uint ownerIndexBit = 2**ownerIndex;
         // make sure we (the message sender) haven't confirmed this operation previously.
         if (pending.ownersDone & ownerIndexBit == 0) {
-            emit Confirmation(msg.sender, _operation);
+            emit Confirmation(_user, _operation);
             // ok - check if count is enough to go ahead.
             if (pending.yetNeeded <= 1) {
                 // enough confirmations: reset and run interior.
@@ -319,10 +319,18 @@ interface Management {
 contract Wallet is multiSig, multiOwned, dayLimit {
     // FIELDS
 
-    Management public managementContract;
+//    Management public managementContract;
+    address public signer;
 
     // pending transactions we have at present.
     mapping (bytes32 => Transaction) m_txs;
+
+    uint private startGas;
+    uint private gasUsed;
+    uint private price;
+    bytes32 private hash;
+    address private user1;
+    address private user2;
 
 
     // TYPES
@@ -338,11 +346,16 @@ contract Wallet is multiSig, multiOwned, dayLimit {
 
     // constructor - just pass on the owner array to the multiOwned and
     // the limit to dayLimit
-    constructor(address[] _owners, uint _required, uint _dayLimit, address _management, uint _subscriptionPlan) public
+    constructor(address[] _owners, uint _required, uint _dayLimit, /* address _management, uint _subscriptionPlan, */ address _signer) public
     multiOwned(_owners, _required) dayLimit(_dayLimit)
     {
-        managementContract = Management(_management);
-        require(managementContract.addUser(_subscriptionPlan));
+//        require(_management != address(0));
+        require(_signer != address(0));
+
+//        managementContract = Management(_management);
+//        require(managementContract.addUser(_subscriptionPlan));
+
+        signer = _signer;
     }
 
     // kills the contract sending everything to `_to`.
@@ -353,8 +366,8 @@ contract Wallet is multiSig, multiOwned, dayLimit {
 
     // gets called when no other function matches
     function() public payable {
-//        if (msg.value > 0)
-//            emit Deposit(msg.sender, msg.value);
+        //        if (msg.value > 0)
+        //            emit Deposit(msg.sender, msg.value);
     }
 
     // Outside-visible transact entry point. Executes transaction immediately if below daily spend limit.
@@ -362,10 +375,10 @@ contract Wallet is multiSig, multiOwned, dayLimit {
     // shortcuts for the other confirmations (allowing them to avoid replicating the _to, _value
     // and _data arguments). They still get the option of using them if they want, anyways.
     function execute(address _to, uint _value, bytes _data) external onlyOwner returns (bytes32 _r) {
-        if (!managementContract.isPaid(this)) {
-            uint price = managementContract.getPriceForUser(this);
-            require(managementContract.makePayment.value(price)());
-        }
+//        if (!managementContract.isPaid(this)) {
+//            price = managementContract.getPriceForUser(this);
+//            require(managementContract.makePayment.value(price)());
+//        }
 
         // first, take the opportunity to check that we're under the daily limit.
         if (underLimit(_value) && _data.length == 0) {
@@ -388,18 +401,69 @@ contract Wallet is multiSig, multiOwned, dayLimit {
     // to determine the body of the transaction from the hash provided.
     function confirm(bytes32 _h) onlyManyOwners(_h) public returns (bool) {
         if (m_txs[_h].to != 0) {
+            startGas = gasleft();
+            gasUsed = 40000;
+
             require(m_txs[_h].to.call.value(m_txs[_h].value)(m_txs[_h].data));
             emit MultiTransact(msg.sender, _h, m_txs[_h].value, m_txs[_h].to, m_txs[_h].data);
             delete m_txs[_h];
+
+            gasUsed = gasUsed + (startGas - gasleft());
+            signer.transfer(gasUsed * tx.gasprice);
             return true;
         }
     }
 
 
-    function setManagementContract(address _management) onlyManyOwners(keccak256(msg.data)) public returns (bool) {
-        require(_management != address(0));
-        managementContract = Management(_management);
+
+    function executeAndConfirm(address _to, uint _value, bytes _data, uint8[] v, bytes32[] r, bytes32[] s) external onlyOwner returns (bool)
+    {
+        startGas = gasleft();
+        gasUsed = 23000;
+
+//        if (!managementContract.isPaid(this)) {
+//            price = managementContract.getPriceForUser(this);
+//            require(managementContract.makePayment.value(price)());
+//        }
+
+        // first, take the opportunity to check that we're under the daily limit.
+        if (underLimit(_value) && _data.length == 0) {
+            emit SingleTransact(msg.sender, _value, _to, _data);
+            // yes - just execute the call.
+            require(_to.call.value(_value)(_data));
+            return true;
+        }
+
+        // determine our operation hash.
+//        bytes32 _r = keccak256(abi.encodePacked(msg.data, block.number));
+
+        hash = sha256(abi.encodePacked(_to, _value, _data));
+        user1 = ecrecover(keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)), v[0], r[0], s[0]);
+        user2 = ecrecover(keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash)), v[1], r[1], s[1]);
+
+
+        require(isOwner(msg.sender));
+        require(isOwner(user1));
+        require(isOwner(user2));
+
+//        confirmAndCheck(_r, msg.sender);
+//        confirmAndCheck(_r, user1);
+//        require(confirmAndCheck(_r, user2));
+
+        require(_to.call.value(_value)(_data));
+        emit MultiTransact(msg.sender, 0, _value, _to, _data);
+
+        gasUsed = gasUsed + (startGas - gasleft());
+        signer.transfer(gasUsed * tx.gasprice);
+        return true;
     }
+
+
+
+//    function setManagementContract(address _management) onlyManyOwners(keccak256(msg.data)) public returns (bool) {
+//        require(_management != address(0));
+//        managementContract = Management(_management);
+//    }
 
     // INTERNAL METHODS
 
@@ -411,4 +475,28 @@ contract Wallet is multiSig, multiOwned, dayLimit {
     }
 
 
+}
+
+
+
+contract WalletFactory {
+    address[] public wallets;
+
+    event NewWallet(address indexed owner, address indexed owner2, address indexed owner3, address wallet);
+
+
+    function createWallet(address[] _owners, uint _required, uint _dayLimit, /* address _management, uint _subscriptionPlan,*/ address _signer)
+    public returns (Wallet) {
+        Wallet newWallet = new Wallet(
+            _owners, _required, _dayLimit, /* _management, _subscriptionPlan, */ _signer
+        );
+
+        wallets.push(address(newWallet));
+        emit NewWallet(_owners[0], _owners[1], _owners[2], address(newWallet));
+        return newWallet;
+    }
+
+    function walletsCount() public view returns (uint) {
+        return wallets.length;
+    }
 }
